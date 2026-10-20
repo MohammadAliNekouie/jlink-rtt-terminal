@@ -1,0 +1,41 @@
+// Expo Modules Core Android library for the JLinkUsb native module.
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+def safeExtGet(prop, fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+}
+
+group = 'expo.modules.jlinkusb'
+version = '1.0.0'
+
+android {
+  namespace 'expo.modules.jlinkusb'
+  compileSdkVersion safeExtGet('compileSdkVersion', 35)
+
+  defaultConfig {
+    minSdkVersion safeExtGet('minSdkVersion', 24)
+    targetSdkVersion safeExtGet('targetSdkVersion', 35)
+    versionCode 1
+    versionName '1.0.0'
+  }
+
+  lintOptions {
+    abortOnError false
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+
+  kotlinOptions {
+    jvmTarget = '17'
+  }
+}
+
+dependencies {
+  // The Expo Modules Core API (expo.modules.kotlin.*); provided by the Expo runtime.
+  implementation project(':expo-modules-core')
+  implementation 'org.jetbrains.kotlin:kotlin-stdlib'
+}

@@ -1,0 +1,92 @@
+
+# Dependencies
+node_modules
+
+# Package manager logs
+npm-debug.log
+yarn-debug.log
+pnpm-debug.log
+
+# Metro
+.metro-health-check
+.metro-cache
+haste-map-
+
+# React Native
+.jsbundle
+.hbc
+.bundle
+
+# Environment variables and secrets
+.env
+.env.
+!.env.example
+
+# Android  Gradle
+android.gradle
+androidbuild
+android.cxx
+androidlocal.properties
+android.idea
+androidappdebug
+androidapprelease
+androidappprofile
+android.externalNativeBuild
+
+# Android signing keys - never commit these
+.keystore
+.jks
+androidkey.properties
+
+# iOS
+iosPods
+iosbuild
+iosDerivedData
+ios.xcworkspacexcuserdata
+ios.xcodeprojxcuserdata
+ios.xcuserstate
+
+# IDEs and editors
+.idea
+.vscode
+.iml
+.suo
+.user
+.userosscache
+.sln.docstates
+
+# Windows
+Thumbs.db
+Thumbs.dbencryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN
+.lnk
+
+# macOS
+.DS_Store
+
+# Logs
+logs
+.log
+
+# Test coverage
+coverage
+
+# Temporary files
+.tmp
+.temp
+.swp
+.swo
+.bak
+
+# TypeScript
+.tsbuildinfo
+
+# Expo (if applicable)
+.expo
+dist
+web-build
+
+# React Native tooling
+.watchman-cookie-

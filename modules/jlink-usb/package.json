@@ -1,0 +1,22 @@
+{
+  "name": "jlink-usb",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Expo Modules Core native bridge for raw USB bulk transfer to SEGGER J-Link probes (Android).",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "expo-module.config.json",
+    "android"
+  ],
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*"
+  },
+  "devDependencies": {
+    "expo-modules-core": "*"
+  },
+  "license": "MIT"
+}

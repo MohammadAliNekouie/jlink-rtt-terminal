@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "J-Link RTT Terminal",
+    "slug": "jlink-rtt-terminal",
+    "version": "1.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.nikohost.jlinkrtt",
+      "versionCode": 2,
+      "minSdkVersion": 24,
+      "permissions": [],
+      "usesCleartextTraffic": false
+    },
+    "plugins": [
+      "./plugins/withUsbHost"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f1f1c1da-77a1-4a04-b736-d35a519de74b"
+      }
+    }
+  }
+}

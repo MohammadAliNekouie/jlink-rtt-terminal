@@ -1,0 +1,29 @@
+{
+  "name": "jlink-rtt-terminal",
+  "version": "1.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild --platform android --clean",
+    "build:android:preview": "eas build --platform android --profile preview",
+    "build:android:apk": "eas build --platform android --profile preview --output ./jlink-rtt-preview.apk",
+    "typecheck": "tsc --noEmit",
+    "check": "node scripts/static-check.mjs",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "expo": "~53.0.0",
+    "expo-status-bar": "~2.2.3",
+    "react": "19.0.0",
+    "react-native": "0.79.5",
+    "jlink-usb": "file:./modules/jlink-usb"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@expo/config-plugins": "~10.0.0",
+    "@types/react": "~19.0.10",
+    "typescript": "~5.8.3"
+  }
+}
