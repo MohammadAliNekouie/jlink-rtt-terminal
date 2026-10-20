@@ -5,24 +5,23 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo run:android",
+    "android": "expo start --android",
     "prebuild": "expo prebuild --platform android --clean",
     "build:android:preview": "eas build --platform android --profile preview",
     "build:android:apk": "eas build --platform android --profile preview --output ./jlink-rtt-preview.apk",
     "typecheck": "tsc --noEmit",
-    "check": "node scripts/static-check.mjs",
-    "ios": "expo run:ios"
+    "check": "node scripts/static-check.mjs"
   },
   "dependencies": {
     "expo": "~53.0.0",
     "expo-status-bar": "~2.2.3",
     "react": "19.0.0",
-    "react-native": "0.79.5",
-    "jlink-usb": "file:./modules/jlink-usb"
+    "react-native": "0.79.6",
+    "jlink-usb": "file:./modules/jlink-usb",
+    "expo-modules-core": "~2.3.13"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
-    "@expo/config-plugins": "~10.0.0",
     "@types/react": "~19.0.10",
     "typescript": "~5.8.3"
   }

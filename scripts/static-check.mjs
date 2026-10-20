@@ -20,7 +20,7 @@ for (const p of ['package.json', 'app.json', 'eas.json',
 // 2. Dependency wiring.
 const pkg = readJson('package.json');
 ok(pkg.dependencies.expo.startsWith('~53'), 'expo ~53');
-ok(pkg.dependencies['react-native'] === '0.79.5', 'react-native 0.79.5');
+ok(pkg.dependencies['react-native'] === '0.79.6', 'react-native 0.79.6');
 ok(pkg.dependencies.react === '19.0.0', 'react 19.0.0');
 ok(pkg.dependencies['jlink-usb'] === 'file:./modules/jlink-usb', 'local module file dep');
 ok(pkg.main === 'node_modules/expo/AppEntry.js', 'entry expo/AppEntry');

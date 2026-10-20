@@ -12,17 +12,18 @@
     "android": {
       "package": "com.nikohost.jlinkrtt",
       "versionCode": 2,
-      "minSdkVersion": 24,
       "permissions": [],
-      "usesCleartextTraffic": false
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0F1115"
+      }
     },
     "plugins": [
       "./plugins/withUsbHost"
     ],
     "extra": {
-      "eas": {
-        "projectId": "f1f1c1da-77a1-4a04-b736-d35a519de74b"
-      }
-    }
+      "eas": {}
+    },
+    "icon": "./assets/icon.png"
   }
 }
