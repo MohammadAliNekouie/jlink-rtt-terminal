@@ -19,10 +19,13 @@
       }
     },
     "plugins": [
-      "./plugins/withUsbHost"
+      "./plugins/withUsbHost",
+      "expo-asset"
     ],
     "extra": {
-      "eas": {}
+      "eas": {
+        "projectId": "f1f1c1da-77a1-4a04-b736-d35a519de74b"
+      }
     },
     "icon": "./assets/icon.png"
   }
