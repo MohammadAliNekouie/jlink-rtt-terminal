@@ -5,12 +5,13 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
+    "android": "expo run:android",
     "prebuild": "expo prebuild --platform android --clean",
     "build:android:preview": "eas build --platform android --profile preview",
     "build:android:apk": "eas build --platform android --profile preview --output ./jlink-rtt-preview.apk",
     "typecheck": "tsc --noEmit",
-    "check": "node scripts/static-check.mjs"
+    "check": "node scripts/static-check.mjs",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "expo": "~53.0.0",
