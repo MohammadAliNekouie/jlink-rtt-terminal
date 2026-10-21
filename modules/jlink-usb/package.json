@@ -12,8 +12,7 @@
     "android"
   ],
   "peerDependencies": {
-    "expo": "*",
-    "expo-modules-core": "*"
+    "expo": "*"
   },
   "devDependencies": {
     "expo-modules-core": "*"
