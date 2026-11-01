@@ -59,7 +59,7 @@ export class Session {
       const rtt = new Rtt(dap);
       await this.connectLoop(dap);
       if (!this.running) return;
-      this.ui.status('SWD up, DPIDR=' + hex32(dap.dpidr) + ' (drive-bit=' + dap.hostDriveBit + ')');
+      this.ui.status('SWD up, DPIDR=' + hex32(dap.dpidr) + ' (drive-bit=' + dap.hostDriveBit + ', offset=' + dap.sampleOffset + ')');
 
       let cb: number | null = this.cfg.fixedAddr;
       while (this.running && cb === null) {

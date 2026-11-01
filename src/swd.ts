@@ -97,14 +97,15 @@ class Batch {
     const bits = this.out.size;
     const inBytes = await jl.swdIo(this.dir.bytes, this.out.bytes, bits);
     const inv = new BitVec(inBytes);
+    const off = this.dap.sampleOffset;
     const ack: number[] = [];
     const data: number[] = [];
     const parityOk: boolean[] = [];
     for (const t of this.txns) {
-      ack.push(inv.get(t.start + 9, 3));
+      ack.push(inv.get(t.start + 9 + off, 3));
       if (t.read) {
-        const d = inv.get(t.start + 12, 32);
-        const p = inv.get(t.start + 44, 1);
+        const d = inv.get(t.start + 12 + off, 32);
+        const p = inv.get(t.start + 44 + off, 1);
         data.push(d);
         parityOk.push((popcount32(d) & 1) === p);
       } else {
@@ -120,6 +121,9 @@ class Batch {
 export class SwdDap {
   /** Value of a "direction" bit meaning "host drives SWDIO". Auto-detected in connect(). */
   hostDriveBit = 1;
+  /** Shift (in bits) between where the request/ACK/data are expected in the J-Link input stream and where they
+   *  actually arrive. Auto-calibrated in connect(). */
+  sampleOffset = 0;
   dpidr = 0;
 
   constructor(private jl: JLink) {}
@@ -165,23 +169,45 @@ export class SwdDap {
   async connect(): Promise<number> {
     let ok = false;
     let lastAck = 0;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    let rawDump = '';
+    const OFFSETS = [0, 1, -1, 2, -2, 3];
+    for (let attempt = 0; attempt < 4 && !ok; attempt++) {
       const b = new Batch(this);
       b.lineResetAndSwitch();
       const i = b.read(false, DP_DPIDR);
-      const r = await b.run(this.jl);
-      lastAck = r.ack[i];
-      if (lastAck === ACK_OK && r.parityOk[i]) {
-        this.dpidr = r.data[i];
+      const start = b.txns[i].start;
+      const bits = b.out.size;
+      const inBytes = await this.jl.swdIo(b.dir.bytes, b.out.bytes, bits);
+      const inv = new BitVec(inBytes);
+      rawDump = inv.get(start, 16).toString(16).padStart(4, '0') + ' ' +
+        inv.get(start + 16, 16).toString(16).padStart(4, '0') + ' ' +
+        inv.get(start + 32, 16).toString(16).padStart(4, '0') + ' ' +
+        inv.get(start + 48 > bits - 8 ? bits - 8 : start + 48, 8).toString(16).padStart(2, '0');
+      // The target's DPIDR must come back as: ACK=OK, data with bit0 = 1 (RAO), valid parity.
+      for (const off of OFFSETS) {
+        const a0 = start + 9 + off;
+        if (a0 < 0 || start + 45 + off >= bits) continue;
+        const ack = inv.get(a0, 3);
+        lastAck = lastAck || ack;
+        if (ack !== ACK_OK) continue;
+        const d = inv.get(start + 12 + off, 32);
+        const p = inv.get(start + 44 + off, 1);
+        if ((popcount32(d) & 1) !== p) continue;
+        if ((d & 1) !== 1 || d === 0xffffffff) continue;
+        this.sampleOffset = off;
+        this.dpidr = d;
         ok = true;
         break;
       }
-      // Not even a valid ACK pattern -> likely wrong direction-bit polarity (or nothing attached).
-      if (lastAck !== ACK_WAIT && lastAck !== ACK_FAULT) this.hostDriveBit = 1 - this.hostDriveBit;
+      if (!ok) {
+        // Nothing decodable at any offset -> try the opposite direction-bit polarity next.
+        this.hostDriveBit = 1 - this.hostDriveBit;
+      }
     }
     if (!ok) {
       throw new SwdError(
-        'No SWD response (ack=0x' + lastAck.toString(16) + '). Check SWDIO/SWCLK/GND, VTref and target power.',
+        'No SWD response (ack=0x' + lastAck.toString(16) + '). Raw in-bits: ' + rawDump +
+          '. Check SWDIO/SWCLK/GND, VTref and target power.',
       );
     }
 
