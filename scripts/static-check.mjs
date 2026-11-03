@@ -64,5 +64,35 @@ ok(kt.includes('package expo.modules.jlinkusb'), 'kotlin package matches config'
 // 8. App entry file exists and imports local src (no expo-status-bar requirement).
 ok(fs.existsSync(path.join(root, 'App.tsx')), 'App.tsx exists');
 
+// 9. Firmware-update feature wiring.
+for (const f of ['src/flasher.ts', 'src/image.ts', 'src/target.ts', 'src/hexview.ts', 'src/flash/index.ts',
+                 'src/flash/types.ts', 'src/flash/stm32f4.ts', 'src/flash/stm32fpec.ts', 'src/flash/stm32ids.ts',
+                 'src/flash/nrf52.ts', 'scripts/sim-test.sh', 'tests/sim/test.ts']) {
+  ok(fs.existsSync(path.join(root, f)), f + ' exists');
+}
+for (const d of ['expo-document-picker', 'expo-file-system', 'expo-keep-awake']) {
+  ok(!!pkg.dependencies[d], 'dependency ' + d);
+}
+{
+  const lock = readJson('package-lock.json');
+  const locked = lock.packages && lock.packages['node_modules/expo-document-picker'];
+  console.log((locked ? 'PASS' : 'NOTE') + '  package-lock.json ' + (locked ? 'includes' : 'does NOT yet include') +
+    ' the new dependencies' + (locked ? '' : ' -> run `npm install` once before `eas build` (npm ci fails otherwise)'));
+}
+ok(readJson('app.json').expo.android.versionCode >= 3, 'android versionCode bumped (>= 3)');
+
+// 10. Icons and version consistency.
+{
+  const png = (f) => { const b = fs.readFileSync(path.join(root, f)); return [b.readUInt32BE(16), b.readUInt32BE(20)]; };
+  for (const f of ['assets/icon.png', 'assets/adaptive-icon.png']) {
+    const [w, h] = png(f);
+    ok(w === 1024 && h === 1024, f + ' is 1024x1024 (' + w + 'x' + h + ')');
+  }
+  const app = readJson('app.json').expo;
+  ok(app.icon === './assets/icon.png' && app.android.adaptiveIcon.foregroundImage === './assets/adaptive-icon.png' &&
+     app.android.adaptiveIcon.backgroundColor === '#FFFFFF', 'app.json icon paths');
+  ok(app.version === pkg.version, 'app.json version (' + app.version + ') == package.json version (' + pkg.version + ')');
+}
+
 console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

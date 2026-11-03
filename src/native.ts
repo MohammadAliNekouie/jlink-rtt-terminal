@@ -12,6 +12,10 @@ interface JLinkUsbNative {
   open(name: string): Promise<boolean>;
   /** Write base64 data (may be ""), then read exactly `expect` bytes; returns base64. */
   transact(b64: string, expect: number): Promise<string>;
+  /** Human-readable USB descriptor dump + the interface/endpoints in use (for diagnostics). */
+  describe(): string;
+  /** Discard stale bytes waiting on the IN endpoint; returns how many were dropped. */
+  flush(): number;
   close(): void;
 }
 

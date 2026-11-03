@@ -1,3 +1,36 @@
+# v1.2.5 status
+
+- Exact-pixel icon (adaptive: white plate), separate RTT / USB message pages with tabs, default base address 08000000.
+
+# v1.2.4 status
+
+- New app icon (+ adaptive icon), version label next to the Firmware update button, USB trace printed only on failure.
+
+# v1.2.3 status
+
+- 5V switch ignored on OB probes (it browned out the probe), +-8 bit sample-offset search, raw DPIDR bits in terminal.
+
+# v1.2.2 status
+
+- Old-firmware hedges, IN-endpoint flush, endpoint halt state in errors, trace of the first 14 USB exchanges.
+  Cause of the J-Link ARM-OB STM32 (2012 firmware) lock-up is NOT confirmed; these are diagnostics + hedges.
+
+# v1.2.1 status
+
+- USB layer: first-endpoint selection, no subclass requirement, CLEAR_HALT on stalls, descriptor dump,
+  presence check in errors; Session reopens the probe on USB errors (3 attempts). Kotlin changes are NOT
+  compiled/tested here (no Android toolchain) - the EAS build is their first compile.
+
+# v1.2.0 status
+
+- Added: firmware update (STM32F0/F1/F2/F3/F4, nRF52), hex viewer, automatic slower-speed SWD retries,
+  one-bit sample-offset calibration in SWD connect.
+- Verified here: static checks, `npm run test:sim` (18 checks), App.tsx type-checked against stubs.
+- NOT verified: EAS build with the new dependencies, anything on real flash hardware. See TESTING.md.
+- Before building: `npm install` (package-lock.json is stale for the 3 new dependencies).
+
+---
+
 # BUILD STATUS — configs corrected (still not compiled here)
 
 This sandbox has no network/Gradle/EAS access, so **no build was run**. All fixes below

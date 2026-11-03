@@ -1,6 +1,24 @@
 {
   "name": "jlink-rtt-terminal",
-  "version": "1.1.0",
+  "version": "1.2.5",
+  "description": "Android app: SEGGER RTT terminal and firmware updater for J-Link probes over USB-OTG (SWD, TypeScript)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohammadalinekouie/jlink-rtt-terminal.git"
+  },
+  "keywords": [
+    "jlink",
+    "segger",
+    "rtt",
+    "swd",
+    "android",
+    "expo",
+    "react-native",
+    "usb",
+    "stm32",
+    "embedded"
+  ],
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
@@ -11,11 +29,15 @@
     "build:android:apk": "eas build --platform android --profile preview --output ./jlink-rtt-preview.apk",
     "typecheck": "tsc --noEmit",
     "check": "node scripts/static-check.mjs",
-    "ios": "expo run:ios"
+    "ios": "expo run:ios",
+    "test:sim": "bash scripts/sim-test.sh"
   },
   "dependencies": {
     "expo": "~53.0.0",
     "expo-asset": "~11.1.7",
+    "expo-document-picker": "^13.1.0",
+    "expo-file-system": "^18.1.0",
+    "expo-keep-awake": "^14.1.0",
     "expo-status-bar": "~2.2.3",
     "jlink-usb": "file:./modules/jlink-usb",
     "react": "19.0.0",

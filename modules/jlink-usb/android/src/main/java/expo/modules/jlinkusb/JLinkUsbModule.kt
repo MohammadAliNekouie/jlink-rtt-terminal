@@ -34,6 +34,8 @@ class JLinkUsbModule : Module() {
     private var iface: UsbInterface? = null
     private var epIn: UsbEndpoint? = null
     private var epOut: UsbEndpoint? = null
+    private var devName: String? = null
+    private var desc: String = ""
     private val rx = ByteArray(CHUNK)
     private var rxPos = 0
     private var rxLen = 0
@@ -46,6 +48,83 @@ class JLinkUsbModule : Module() {
     private fun findDevice(name: String): UsbDevice =
         manager().deviceList.values.firstOrNull { it.deviceName == name && it.vendorId == SEGGER_VID }
             ?: throw IllegalStateException("J-Link device $name not found")
+
+    private fun hex(v: Int): String = "0x" + Integer.toHexString(v)
+
+    /** Is the probe still enumerated? (false after a probe reset, unplug or USB power dip) */
+    private fun present(): Boolean {
+        val n = devName ?: return false
+        return try {
+            manager().deviceList.containsKey(n)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun presence(): String =
+        if (present()) "probe still on USB bus" else "probe GONE from USB bus (reset, unplugged or USB power dip)"
+
+    private fun describeDevice(dev: UsbDevice): String {
+        val sb = StringBuilder()
+        sb.append("VID:PID ").append(hex(dev.vendorId)).append(":").append(hex(dev.productId))
+        for (i in 0 until dev.interfaceCount) {
+            val itf = dev.getInterface(i)
+            sb.append(" | if").append(itf.id)
+                .append(" class ").append(hex(itf.interfaceClass))
+                .append("/").append(hex(itf.interfaceSubclass))
+                .append("/").append(hex(itf.interfaceProtocol))
+            for (k in 0 until itf.endpointCount) {
+                val ep = itf.getEndpoint(k)
+                val kind = if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) "bulk" else "type" + ep.type
+                sb.append(" [").append(hex(ep.address)).append(" ").append(kind).append(" ")
+                    .append(ep.maxPacketSize).append("]")
+            }
+        }
+        return sb.toString()
+    }
+
+    private fun hasBulkPair(itf: UsbInterface): Boolean {
+        var hasIn = false
+        var hasOut = false
+        for (k in 0 until itf.endpointCount) {
+            val ep = itf.getEndpoint(k)
+            if (ep.type != UsbConstants.USB_ENDPOINT_XFER_BULK) continue
+            if (ep.direction == UsbConstants.USB_DIR_IN) hasIn = true else hasOut = true
+        }
+        return hasIn && hasOut
+    }
+
+    /** First vendor-specific interface with a bulk IN+OUT pair (prefers subclass 0xFF, but OB firmwares differ). */
+    private fun pickInterface(dev: UsbDevice): UsbInterface? {
+        for (pass in 0..1) {
+            for (i in 0 until dev.interfaceCount) {
+                val itf = dev.getInterface(i)
+                if (itf.interfaceClass != UsbConstants.USB_CLASS_VENDOR_SPEC) continue
+                if (pass == 0 && itf.interfaceSubclass != UsbConstants.USB_CLASS_VENDOR_SPEC) continue
+                if (hasBulkPair(itf)) return itf
+            }
+        }
+        return null
+    }
+
+    /** Clear a stalled/halted endpoint (standard CLEAR_FEATURE ENDPOINT_HALT). */
+    private fun clearHalt(c: UsbDeviceConnection, ep: UsbEndpoint) {
+        try {
+            c.controlTransfer(0x02, 0x01, 0, ep.address, null, 0, 500)
+        } catch (_: Exception) {
+        }
+    }
+
+    /** USB GET_STATUS(endpoint): "halted" / "ok" / "?" - tells a STALL from a plain timeout. */
+    private fun epState(c: UsbDeviceConnection, ep: UsbEndpoint): String {
+        return try {
+            val b = ByteArray(2)
+            val r = c.controlTransfer(0x82, 0x00, 0, ep.address, b, 2, 300)
+            if (r == 2) (if ((b[0].toInt() and 1) != 0) "halted" else "ok") else "?"
+        } catch (_: Exception) {
+            "?"
+        }
+    }
 
     override fun definition() = ModuleDefinition {
         Name("JLinkUsb")
@@ -87,35 +166,31 @@ class JLinkUsbModule : Module() {
         AsyncFunction("open") { name: String ->
             closeInternal()
             val dev = findDevice(name)
-            var found: UsbInterface? = null
-            for (i in 0 until dev.interfaceCount) {
-                val itf = dev.getInterface(i)
-                if (itf.interfaceClass == UsbConstants.USB_CLASS_VENDOR_SPEC &&
-                    itf.interfaceSubclass == UsbConstants.USB_CLASS_VENDOR_SPEC &&
-                    itf.endpointCount >= 2
-                ) {
-                    found = itf
-                    break
-                }
-            }
-            val itf = found ?: throw IllegalStateException("No J-Link vendor interface")
+            val itf = pickInterface(dev)
+                ?: throw IllegalStateException("No J-Link vendor interface. Descriptors: " + describeDevice(dev))
             var inEp: UsbEndpoint? = null
             var outEp: UsbEndpoint? = null
             for (i in 0 until itf.endpointCount) {
                 val ep = itf.getEndpoint(i)
                 if (ep.type != UsbConstants.USB_ENDPOINT_XFER_BULK) continue
-                if (ep.direction == UsbConstants.USB_DIR_IN) inEp = ep else outEp = ep
+                if (ep.direction == UsbConstants.USB_DIR_IN) {
+                    if (inEp == null) inEp = ep
+                } else {
+                    if (outEp == null) outEp = ep
+                }
             }
             if (inEp == null || outEp == null) throw IllegalStateException("Bulk endpoints not found")
             val c = manager().openDevice(dev) ?: throw IllegalStateException("openDevice failed (no permission?)")
             if (!c.claimInterface(itf, true)) {
                 c.close()
-                throw IllegalStateException("claimInterface failed")
+                throw IllegalStateException("claimInterface failed. Descriptors: " + describeDevice(dev))
             }
             conn = c
             iface = itf
             epIn = inEp
             epOut = outEp
+            devName = name
+            desc = describeDevice(dev) + " | using if" + itf.id + " in=" + hex(inEp.address) + " out=" + hex(outEp.address)
             rxPos = 0
             rxLen = 0
             true
@@ -129,18 +204,31 @@ class JLinkUsbModule : Module() {
             val data = if (b64.isEmpty()) ByteArray(0) else Base64.decode(b64, Base64.NO_WRAP)
 
             var off = 0
-            var tries = 2
+            var fails = 0
             while (off < data.size) {
+                val t0 = System.nanoTime()
                 val n = c.bulkTransfer(eo, data, off, minOf(CHUNK, data.size - off), TIMEOUT_MS)
                 if (n < 0) {
-                    if (--tries == 0) {
+                    val ms = (System.nanoTime() - t0) / 1000000L
+                    fails++
+                    if (fails >= 3) {
                         rxPos = 0
                         rxLen = 0
-                        throw IllegalStateException("USB write failed/timeout")
+                        throw IllegalStateException(
+                            "USB write failed (ep " + hex(eo.address) + ", " + off + "/" + data.size +
+                                " bytes sent, result " + n + " after " + ms + " ms, endpoint " + epState(c, eo) +
+                                ", " + presence() + ")"
+                        )
+                    }
+                    clearHalt(c, eo)
+                    try {
+                        val i = iface
+                        if (i != null) c.setInterface(i)
+                    } catch (_: Exception) {
                     }
                     continue
                 }
-                tries = 2
+                fails = 0
                 off += n
             }
 
@@ -152,11 +240,15 @@ class JLinkUsbModule : Module() {
                     var attempts = 5
                     while (attempts-- > 0 && n <= 0) {
                         n = c.bulkTransfer(ei, rx, 0, CHUNK, TIMEOUT_MS)
+                        if (n <= 0 && attempts == 2) clearHalt(c, ei)
                     }
                     if (n <= 0) {
                         rxPos = 0
                         rxLen = 0
-                        throw IllegalStateException("USB read timeout")
+                        throw IllegalStateException(
+                            "USB read timeout (ep " + hex(ei.address) + ", " + o + "/" + expect +
+                                " bytes received, " + presence() + ")"
+                        )
                     }
                     rxPos = 0
                     rxLen = n
@@ -167,6 +259,27 @@ class JLinkUsbModule : Module() {
                 o += take
             }
             if (expect == 0) "" else Base64.encodeToString(out, Base64.NO_WRAP)
+        }
+
+        // Drain any stale response bytes the probe is still trying to send (a blocked probe stops reading commands).
+        Function("flush") {
+            val c = conn
+            val ei = epIn
+            var total = 0
+            if (c != null && ei != null) {
+                for (k in 0 until 40) {
+                    val n = c.bulkTransfer(ei, rx, 0, CHUNK, 60)
+                    if (n <= 0) break
+                    total += n
+                }
+            }
+            rxPos = 0
+            rxLen = 0
+            total
+        }
+
+        Function("describe") {
+            desc
         }
 
         Function("close") {
@@ -190,6 +303,7 @@ class JLinkUsbModule : Module() {
         iface = null
         epIn = null
         epOut = null
+        devName = null
         rxPos = 0
         rxLen = 0
     }

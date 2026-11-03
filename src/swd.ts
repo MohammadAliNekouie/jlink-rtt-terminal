@@ -18,6 +18,8 @@ const AP_TAR = 0x4;
 const AP_DRW = 0xc;
 // 32-bit, single auto-increment, DbgSwEnable | Master type | HProt
 const CSW_VALUE = 0xa2000012;
+// same, but 16-bit transfers (for flash controllers that only accept halfword programming, e.g. STM32F1)
+const CSW_HALF = 0xa2000011;
 
 const IDLE_BITS = 8;
 const MAX_BITS = 2048;
@@ -51,6 +53,16 @@ class Batch {
   private ones(n: number): void {
     this.dir.fill(this.dirBit(true), n);
     this.out.fill(1, n);
+  }
+
+  /** Extra idle clocks (host drives low), e.g. to give a slow flash controller time between writes. */
+  pad(bits: number): void {
+    let left = bits;
+    while (left > 0) {
+      const n = Math.min(left, 32);
+      this.phase(true, 0, n);
+      left -= n;
+    }
   }
 
   lineResetAndSwitch(): void {
@@ -169,8 +181,8 @@ export class SwdDap {
   async connect(): Promise<number> {
     let ok = false;
     let lastAck = 0;
-    let rawDump = '';
-    const OFFSETS = [0, 1, -1, 2, -2, 3];
+    const dumps: string[] = [];
+    const OFFSETS = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
     for (let attempt = 0; attempt < 4 && !ok; attempt++) {
       const b = new Batch(this);
       b.lineResetAndSwitch();
@@ -179,10 +191,14 @@ export class SwdDap {
       const bits = b.out.size;
       const inBytes = await this.jl.swdIo(b.dir.bytes, b.out.bytes, bits);
       const inv = new BitVec(inBytes);
-      rawDump = inv.get(start, 16).toString(16).padStart(4, '0') + ' ' +
-        inv.get(start + 16, 16).toString(16).padStart(4, '0') + ' ' +
-        inv.get(start + 32, 16).toString(16).padStart(4, '0') + ' ' +
-        inv.get(start + 48 > bits - 8 ? bits - 8 : start + 48, 8).toString(16).padStart(2, '0');
+      if (dumps.length < 2) {
+        // The DPIDR transaction as sampled: request(8) TRN ACK(3) data(32) parity ... (LSB first, 16-bit groups)
+        const raw = inv.get(start, 16).toString(16).padStart(4, '0') + ' ' +
+          inv.get(start + 16, 16).toString(16).padStart(4, '0') + ' ' +
+          inv.get(start + 32, 16).toString(16).padStart(4, '0') + ' ' +
+          inv.get(start + 48 > bits - 8 ? bits - 8 : start + 48, 8).toString(16).padStart(2, '0');
+        dumps.push('drive' + this.hostDriveBit + ': ' + raw);
+      }
       // The target's DPIDR must come back as: ACK=OK, data with bit0 = 1 (RAO), valid parity.
       for (const off of OFFSETS) {
         const a0 = start + 9 + off;
@@ -206,7 +222,7 @@ export class SwdDap {
     }
     if (!ok) {
       throw new SwdError(
-        'No SWD response (ack=0x' + lastAck.toString(16) + '). Raw in-bits: ' + rawDump +
+        'No SWD response (ack=0x' + lastAck.toString(16) + '). Raw in-bits: ' + dumps.join(' ; ') +
           '. Check SWDIO/SWCLK/GND, VTref and target power.',
       );
     }
@@ -268,6 +284,70 @@ export class SwdDap {
       for (let k = 0; k < n; k++) b.write(true, AP_DRW, words[done + k]);
       b.read(false, DP_RDBUFF); // flush + surface errors
       await this.runChecked(b);
+      done += n;
+    }
+  }
+
+  /**
+   * Like writeWords(), but inserts `padBits` idle clocks after every word and does no posted-read flush.
+   * Used for flash controllers that stall the bus while programming: the pad keeps the DP from answering
+   * WAIT in the middle of a batch (a retried batch would otherwise reprogram words).
+   */
+  async writeWordsPaced(addr: number, words: number[], padBits: number): Promise<void> {
+    const pad = Math.max(0, Math.min(Math.floor(padBits), 1500));
+    const perWord = 54 + pad; // 8 req + 1 trn + 3 ack + 1 trn + 32 data + 1 parity + IDLE_BITS + pad
+    const maxWords = Math.max(1, Math.floor((MAX_BITS - 54) / perWord));
+    let done = 0;
+    while (done < words.length) {
+      const a = addr + done * 4;
+      const toBoundary = (0x400 - (a & 0x3ff)) >> 2;
+      const n = Math.min(words.length - done, maxWords, toBoundary);
+      const b = new Batch(this);
+      b.write(true, AP_TAR, a);
+      for (let k = 0; k < n; k++) {
+        b.write(true, AP_DRW, words[done + k]);
+        b.pad(pad);
+      }
+      await this.runChecked(b);
+      done += n;
+    }
+  }
+
+  /**
+   * Paced 16-bit writes (STM32F0/F1/F3 flash programs one halfword at a time). Switches the MEM-AP to
+   * halfword transfers for the duration of each batch and always puts it back to 32-bit.
+   */
+  async writeHalfwordsPaced(addr: number, hws: number[], padBits: number): Promise<void> {
+    if ((addr & 1) !== 0) throw new SwdError('Unaligned halfword write');
+    const pad = Math.max(0, Math.min(Math.floor(padBits), 1500));
+    const perHw = 54 + pad;
+    const maxN = Math.max(1, Math.floor((MAX_BITS - 3 * 54) / perHw)); // CSW, TAR, CSW restore
+    let done = 0;
+    while (done < hws.length) {
+      const a = addr + done * 2;
+      const toBoundary = (0x400 - (a & 0x3ff)) >> 1;
+      const n = Math.min(hws.length - done, maxN, toBoundary);
+      const b = new Batch(this);
+      b.write(true, AP_CSW, CSW_HALF);
+      b.write(true, AP_TAR, a);
+      for (let k = 0; k < n; k++) {
+        const lane = ((a + 2 * k) & 2) * 8; // halfword rides on byte lanes 0-1 or 2-3
+        b.write(true, AP_DRW, ((hws[done + k] & 0xffff) << lane) >>> 0);
+        b.pad(pad);
+      }
+      b.write(true, AP_CSW, CSW_VALUE);
+      try {
+        await this.runChecked(b);
+      } catch (e) {
+        try {
+          const r = new Batch(this);
+          r.write(true, AP_CSW, CSW_VALUE);
+          await this.runChecked(r);
+        } catch {
+          /* link is gone; connect() restores CSW */
+        }
+        throw e;
+      }
       done += n;
     }
   }

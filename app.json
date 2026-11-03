@@ -2,7 +2,7 @@
   "expo": {
     "name": "J-Link RTT Terminal",
     "slug": "jlink-rtt-terminal",
-    "version": "1.1.0",
+    "version": "1.2.5",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
@@ -11,11 +11,11 @@
     ],
     "android": {
       "package": "com.nikohost.jlinkrtt",
-      "versionCode": 2,
+      "versionCode": 8,
       "permissions": [],
       "adaptiveIcon": {
-        "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#0F1115"
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
       }
     },
     "plugins": [

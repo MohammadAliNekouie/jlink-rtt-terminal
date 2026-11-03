@@ -1,0 +1,1 @@
+export default { listDevices: () => [{ name: 'x', vid: 0, pid: 0 }], requestPermission: async (_n: string) => true, open: async (_n: string) => true, describe: () => 'fake usb', flush: () => 0, close: () => {} };

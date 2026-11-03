@@ -14,11 +14,47 @@ const CMD_SWD_IO = 0xcf;
 
 export const TIF_SWD = 1;
 
+/** The USB layer failed (probe reset, unplugged, endpoint stalled, power dip...). */
+export class UsbError extends Error {}
+
+/** Year from "J-Link ... compiled Aug 22 2012 19:52:04", or null if not found. */
+/** On-board probes ("J-Link ARM-OB STM32", "J-Link OB-STM32F072" ...) share the board's USB power. */
+export function isObProbe(version: string): boolean {
+  return /(^|[^A-Za-z])OB([^A-Za-z]|$)/.test(version.split('compiled')[0]);
+}
+
+export function firmwareYear(version: string): number | null {
+  const m = /compiled\s+\w+\s+\d+\s+(\d{4})/.exec(version);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+const hexs = (b: Uint8Array, max: number): string => {
+  let s = '';
+  for (let i = 0; i < Math.min(b.length, max); i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16) + ' ';
+  return s.trim() + (b.length > max ? ' ...' : '');
+};
+
 export class JLink {
+  /** If set, the first `traceLeft` exchanges are reported (for diagnosing odd probes). */
+  onTrace: ((line: string) => void) | null = null;
+  traceLeft = 14;
+
   private async tx(bytes: number[] | Uint8Array, expect: number): Promise<Uint8Array> {
     const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
-    const r = await native.transact(b64encode(data), expect);
-    return expect === 0 ? new Uint8Array(0) : b64decode(r);
+    const t0 = Date.now();
+    const tr = this.onTrace !== null && this.traceLeft > 0;
+    if (tr) this.traceLeft--;
+    try {
+      const r = await native.transact(b64encode(data), expect);
+      const out = expect === 0 ? new Uint8Array(0) : b64decode(r);
+      if (tr) {
+        this.onTrace!('> ' + hexs(data, 10) + ' (' + data.length + ' B)  < ' + hexs(out, 26) + ' (' + out.length + ' B)  ' + (Date.now() - t0) + ' ms');
+      }
+      return out;
+    } catch (e) {
+      const what = data.length > 0 ? 'cmd 0x' + data[0].toString(16) + ' (' + data.length + ' B out)' : 'read';
+      throw new UsbError('J-Link ' + what + ', expecting ' + expect + ' B, after ' + (Date.now() - t0) + ' ms: ' + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   async getVersion(): Promise<string> {

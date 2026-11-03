@@ -1,92 +1,53 @@
-
 # Dependencies
-node_modules
+node_modules/
 
-# Package manager logs
-npm-debug.log
-yarn-debug.log
-pnpm-debug.log
+# Expo / Metro
+.expo/
+dist/
+web-build/
+.metro-health-check*
+.metro-cache/
 
-# Metro
-.metro-health-check
-.metro-cache
-haste-map-
+# Generated native projects (created by `expo prebuild`; the Kotlin module lives in modules/)
+/android/
+/ios/
 
-# React Native
-.jsbundle
-.hbc
-.bundle
+# Build artifacts
+eas-archive/
+*.apk
+*.aab
+*.ipa
 
-# Environment variables and secrets
+# Signing material and secrets - never commit these
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+credentials.json
 .env
-.env.
+.env.*
 !.env.example
 
-# Android  Gradle
-android.gradle
-androidbuild
-android.cxx
-androidlocal.properties
-android.idea
-androidappdebug
-androidapprelease
-androidappprofile
-android.externalNativeBuild
-
-# Android signing keys - never commit these
-.keystore
-.jks
-androidkey.properties
-
-# iOS
-iosPods
-iosbuild
-iosDerivedData
-ios.xcworkspacexcuserdata
-ios.xcodeprojxcuserdata
-ios.xcuserstate
-
-# IDEs and editors
-.idea
-.vscode
-.iml
-.suo
-.user
-.userosscache
-.sln.docstates
-
-# Windows
-Thumbs.db
-Thumbs.dbencryptable
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN
-.lnk
-
-# macOS
-.DS_Store
-
 # Logs
-logs
-.log
-
-# Test coverage
-coverage
-
-# Temporary files
-.tmp
-.temp
-.swp
-.swo
-.bak
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
 
 # TypeScript
-.tsbuildinfo
+*.tsbuildinfo
 
-# Expo (if applicable)
-.expo
-dist
-web-build
+# Editors / OS
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
 
-# React Native tooling
-.watchman-cookie-
+# Temporary files
+*.tmp
+*.swp
+*.bak
+*.orig
