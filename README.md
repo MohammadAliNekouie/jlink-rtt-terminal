@@ -72,7 +72,7 @@ Hardware reports (working or not) are very welcome — see [Contributing](#contr
 ## Quick start
 
 ```bash
-git clone https://github.com/mohammadalinekouie/jlink-rtt-terminal.git
+git clone https://github.com/MohammadAliNekouie/jlink-rtt-terminal.git
 cd jlink-rtt-terminal
 npm install
 npx expo install --fix        # aligns Expo package versions with the SDK
