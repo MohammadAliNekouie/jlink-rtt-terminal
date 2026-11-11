@@ -1,5 +1,6 @@
 import native from './native';
 import { JLink, TIF_SWD, UsbError, firmwareYear, isObProbe } from './jlink';
+import { probeJtagIdcode } from './jtagdiag';
 import { Rtt } from './rtt';
 import { SwdDap, SwdError } from './swd';
 import { hex32, sleep } from './util';
@@ -26,6 +27,7 @@ export class Session {
   private txq: Uint8Array[] = [];
   private jl: JLink | null = null;
   private startSpeed = 0;
+  private jtagTried = false;
   private trace: string[] = [];
 
   constructor(private cfg: Config, private ui: Listener) {}
@@ -82,6 +84,19 @@ export class Session {
     this.trace = [];
   }
 
+  /** What SEGGER's software does with an on-board probe before the first SWD frame: queries, then registration. */
+  private async seggerStartup(jl: JLink): Promise<void> {
+    try {
+      await jl.seggerQueries();
+      await jl.registerConnection();
+      this.usbLog('on-board probe: registered like SEGGER software (heartbeat every ~3 s)');
+    } catch (e) {
+      this.usbLog('SEGGER-style registration failed: ' + (e instanceof Error ? e.message : String(e)));
+      native.flush();
+      if (e instanceof UsbError) throw e;
+    }
+  }
+
   private usbLog(line: string): void {
     this.ui.log('[usb] ' + line);
   }
@@ -105,15 +120,16 @@ export class Session {
       this.ui.status('Probe: ' + version);
       this.usbLog('probe: ' + version);
       const ob = isObProbe(version);
+      if (ob) await this.seggerStartup(jl);
       const year = firmwareYear(version);
-      const oldFw = year !== null && year <= 2013;
-      if (oldFw) {
-        this.usbLog('old probe firmware (' + year + '): skipping optional queries, limiting SWD to 1000 kHz');
-      }
-      const avail = oldFw ? null : await jl.getAvailableInterfaces();
+      if (year !== null && year <= 2013) this.usbLog('note: old probe firmware (' + year + ')');
+      const avail = await jl.getAvailableInterfaces();
       if (avail !== null && (avail & (1 << TIF_SWD)) === 0) throw new Error('This probe does not offer SWD');
       await jl.selectInterface(TIF_SWD);
-      this.startSpeed = oldFw ? Math.min(this.cfg.speedKhz, 1000) : this.cfg.speedKhz;
+      if (ob) await jl.setSpeedKhz(200); // SEGGER's software sets 200 kHz, then 100 kHz
+      // SEGGER's own software connects to this kind of probe at 100 kHz.
+      this.startSpeed = ob ? Math.min(this.cfg.speedKhz, 100) : this.cfg.speedKhz;
+      if (ob && this.startSpeed < this.cfg.speedKhz) this.usbLog('on-board probe: SWD starts at ' + this.startSpeed + ' kHz');
       await jl.setSpeedKhz(this.startSpeed);
       if (this.cfg.targetPower && ob) {
         this.usbLog('on-board probe: 5V target power switch ignored (the board is powered through the probe USB cable)');
@@ -122,9 +138,11 @@ export class Session {
         await sleep(150);
       }
       const mv = await jl.getTargetVoltageMv();
+      if (ob) await jl.getTargetVoltageMv(); // SEGGER's software reads the status twice
       if (mv !== null && mv < 1000) this.ui.status('Warning: VTref only ' + mv + ' mV - target powered?');
 
       const dap = new SwdDap(jl);
+      if (ob) dap.maxBits = 272; // the largest raw frame (34 bytes) SEGGER's software is seen sending to this probe
       const rtt = new Rtt(dap);
       await this.connectLoop(dap);
       if (!this.running) return;
@@ -206,6 +224,20 @@ export class Session {
         if (tries <= 2) {
           this.flushTrace();
           this.usbLog('SWD connect failed: ' + e.message);
+        }
+        if (tries === 2 && !this.jtagTried && this.jl) {
+          // One-time diagnostic: does the target answer on JTAG? (restores SWD afterwards)
+          this.jtagTried = true;
+          try {
+            this.usbLog(await probeJtagIdcode(this.jl));
+          } catch (je) {
+            this.usbLog('JTAG probe failed: ' + (je instanceof Error ? je.message : String(je)));
+          }
+          try {
+            await this.jl.selectInterface(TIF_SWD);
+          } catch {
+            /* ignore */
+          }
         }
         if (tries >= speeds.length * 2) throw e;
         if (tries % 2 === 0 && si + 1 < speeds.length && this.jl) {

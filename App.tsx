@@ -4,6 +4,7 @@ import {
   Button,
   FlatList,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   SafeAreaView,
@@ -31,6 +32,53 @@ const HEX_ROW_H = 15;
 /** STM32F103CBT6 (128 KB medium-density): flash 0x08000000 - 0x0801FFFF. Example/reference default for .bin files. */
 const DEFAULT_FW_BASE = '08000000';
 type Page = 'rtt' | 'usb';
+/** Standard SWD clock choices (kHz). */
+const SPEEDS = ['5', '10', '20', '50', '100', '200', '400', '500', '1000', '2000', '4000', '5000', '8000', '10000', '12000'];
+
+/** A small drop-down list (button + modal list) so no extra native dependency is needed. */
+function Dropdown(props: {
+  value: string;
+  options: string[];
+  format: (v: string) => string;
+  onChange: (v: string) => void;
+  disabled?: boolean;
+  width?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Pressable
+        style={[styles.field, props.width ? { width: props.width } : styles.flex, styles.dropdown, props.disabled ? styles.dropdownOff : null]}
+        onPress={() => {
+          if (!props.disabled) setOpen(true);
+        }}
+      >
+        <Text style={styles.dropdownText}>{props.format(props.value) + '  \u25BE'}</Text>
+      </Pressable>
+      <Modal visible={open} transparent animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={styles.modalBack} onPress={() => setOpen(false)}>
+          <View style={styles.modalBox}>
+            <FlatList
+              data={props.options}
+              keyExtractor={(v: string) => v}
+              renderItem={({ item }: { item: string }) => (
+                <Pressable
+                  style={[styles.opt, item === props.value ? styles.optOn : null]}
+                  onPress={() => {
+                    props.onChange(item);
+                    setOpen(false);
+                  }}
+                >
+                  <Text style={item === props.value ? styles.optTextOn : styles.optText}>{props.format(item)}</Text>
+                </Pressable>
+              )}
+            />
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
 const EOLS: { label: string; value: string }[] = [
   { label: 'LF', value: '\n' },
   { label: 'CR', value: '\r' },
@@ -45,7 +93,7 @@ function parseHex(s: string): number | null {
 }
 
 export default function App() {
-  const [speed, setSpeed] = useState('4000');
+  const [speed, setSpeed] = useState('1000');
   const [start, setStart] = useState('0x20000000');
   const [size, setSize] = useState('0x20000');
   const [addr, setAddr] = useState('');
@@ -63,6 +111,7 @@ export default function App() {
   const [fwName, setFwName] = useState('');
   const [fwBase, setFwBase] = useState(DEFAULT_FW_BASE);
   const [fwBusy, setFwBusy] = useState(false);
+  const [protectRdp, setProtectRdp] = useState(false); // read-out protection level 1 after programming (off by default)
   const [fwPct, setFwPct] = useState(0);
   const [fwLabel, setFwLabel] = useState('');
   const fwBytes = useRef<Uint8Array | null>(null);
@@ -193,6 +242,16 @@ export default function App() {
     fwJob.current?.cancel();
   }, []);
 
+  /** Clear both message pages and the command field. */
+  const clearAll = () => {
+    pending.current = '';
+    usbPending.current = '';
+    setTerm('');
+    setUsbTerm('');
+    setInput('');
+    setUnseen({ rtt: false, usb: false });
+  };
+
   const selectPage = (p: Page) => {
     pageRef.current = p;
     setPage(p);
@@ -217,11 +276,11 @@ export default function App() {
     }
   };
 
-  const runFlash = (segs: Segment[], sp: number) => {
+  const runFlash = (segs: Segment[], sp: number, protect: boolean) => {
     void activateKeepAwakeAsync('flash');
     selectPage('usb'); // flashing progress is logged on the USB page
     const job = new FlashJob(
-      { speedKhz: Math.min(sp, 0xfffe), targetPower: power, segments: segs, runAfter: true },
+      { speedKhz: Math.min(sp, 0xfffe), targetPower: power, segments: segs, runAfter: true, protect },
       {
         log: (line) => {
           usbPending.current += '[flash] ' + line + '\n';
@@ -275,14 +334,21 @@ export default function App() {
     }
     const segs = preview.segs;
     const last = segs[segs.length - 1];
+    const protect = protectRdp;
     Alert.alert(
-      'Update firmware?',
+      protect ? 'Update firmware AND set read-out protection?' : 'Update firmware?',
       imageSize(segs) + ' bytes, ' + hex32(segs[0].addr) + ' - ' + hex32(last.addr + last.data.length - 1) +
         '\n\nThe flash sectors covering this range will be ERASED and reprogrammed, then verified. ' +
-        'Do not unplug the probe or close the app until it finishes.',
+        'Do not unplug the probe or close the app until it finishes.' +
+        (protect
+          ? '\n\nAFTER a successful verify the chip is set to read-out protection level 1 (STM32 F0/F1/F2/F3/F4). ' +
+            'The firmware can no longer be read back, a connected debugger makes the chip fault, so RTT and further ' +
+            'flashing with this app will NOT work, and removing the protection erases the whole chip ' +
+            '(STM32CubeProgrammer, RDP level 0). You must power-cycle the board afterwards.'
+          : ''),
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Flash', style: 'destructive', onPress: () => runFlash(segs, sp) },
+        { text: protect ? 'Flash + protect' : 'Flash', style: 'destructive', onPress: () => runFlash(segs, sp, protect) },
       ],
     );
   };
@@ -295,8 +361,14 @@ export default function App() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.row}>
-          <TextInput style={[styles.field, styles.flex]} value={speed} onChangeText={setSpeed}
-            keyboardType="number-pad" placeholder="SWD kHz" />
+          <Dropdown
+            value={speed}
+            options={SPEEDS}
+            format={(v) => v + ' kHz'}
+            width={96}
+            onChange={setSpeed}
+            disabled={connected || fwBusy}
+          />
           <TextInput style={[styles.field, styles.flex2]} value={start} onChangeText={setStart}
             autoCapitalize="none" placeholder="RAM start (hex)" />
           <TextInput style={[styles.field, styles.flex]} value={size} onChangeText={setSize}
@@ -327,6 +399,12 @@ export default function App() {
                 autoCapitalize="none" placeholder="base addr for .bin (hex)" editable={!fwBusy} />
               <Button title="Flash" onPress={startFlash} disabled={fwBusy || !fwName} />
               <Button title="Cancel" onPress={() => fwJob.current?.cancel()} disabled={!fwBusy} />
+            </View>
+            <View style={styles.row}>
+              <Switch value={protectRdp} onValueChange={setProtectRdp} disabled={fwBusy} />
+              <Text style={[styles.small, styles.flex]}>
+                Read-out protect (RDP 1) after programming - STM32 F0/F1/F2/F3/F4. Off by default. Chip then needs a full erase to be reprogrammed.
+              </Text>
             </View>
             <Text style={styles.small}>
               Example: STM32F103CBT6 flash starts at 08000000 (128 KB, up to 0801FFFF). Used for .bin files only - a .hex file carries its own addresses.
@@ -382,7 +460,7 @@ export default function App() {
               </Text>
             </Pressable>
           ))}
-          <Button title="Clr" onPress={() => (page === 'rtt' ? setTerm('') : setUsbTerm(''))} />
+          <Button title="Clr" onPress={clearAll} />
         </View>
         {page === 'rtt' && (
           <View style={styles.row}>
@@ -420,6 +498,15 @@ const styles = StyleSheet.create({
   hexList: { height: 210, backgroundColor: '#101010', borderRadius: 4 },
   hexRow: { height: HEX_ROW_H, color: '#d0e8d0', fontFamily: 'monospace', fontSize: 11, paddingHorizontal: 4 },
   err: { color: '#c62828' },
+  dropdown: { justifyContent: 'center' },
+  dropdownOff: { opacity: 0.5 },
+  dropdownText: { fontSize: 13 },
+  modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'center', padding: 40 },
+  modalBox: { backgroundColor: '#ffffff', borderRadius: 8, maxHeight: '75%', paddingVertical: 6 },
+  opt: { paddingVertical: 12, paddingHorizontal: 18 },
+  optOn: { backgroundColor: '#e8f0ff' },
+  optText: { fontSize: 16, color: '#111111' },
+  optTextOn: { fontSize: 16, color: '#1e5bff', fontWeight: '600' },
   tabs: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, gap: 6, marginBottom: 2 },
   tab: { flex: 1, paddingVertical: 8, borderRadius: 6, backgroundColor: '#e3e3e3', alignItems: 'center' },
   tabOn: { backgroundColor: '#1e5bff' },

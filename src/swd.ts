@@ -65,6 +65,19 @@ class Batch {
     }
   }
 
+  /**
+   * Longer startup used by SEGGER's own software on an on-board J-Link (seen in a capture):
+   * reset, JTAG->SWD (0xE79E), reset, 0xEDB6, reset, 16 idle clocks. Tried as a fallback when the standard one gets no answer.
+   */
+  lineResetAndSwitchLong(): void {
+    this.ones(56);
+    this.phase(true, 0xe79e, 16);
+    this.ones(56);
+    this.phase(true, 0xedb6, 16);
+    this.ones(56);
+    this.phase(true, 0, 16);
+  }
+
   lineResetAndSwitch(): void {
     this.ones(56);              // >= 50 clocks high
     this.phase(true, 0xe79e, 16); // JTAG -> SWD select sequence
@@ -132,6 +145,11 @@ class Batch {
 /** Minimal ADIv5 over SWD: DP power-up and MEM-AP 0 word access (Cortex-M), batched. */
 export class SwdDap {
   /** Value of a "direction" bit meaning "host drives SWDIO". Auto-detected in connect(). */
+  /**
+   * Largest raw SWD_IO frame (bits) used for memory access. 2048 is fine for current probes; an old on-board probe is
+   * only known to handle 34-byte frames (272 bits) - set this lower for it.
+   */
+  maxBits = MAX_BITS;
   hostDriveBit = 1;
   /** Shift (in bits) between where the request/ACK/data are expected in the J-Link input stream and where they
    *  actually arrive. Auto-calibrated in connect(). */
@@ -182,10 +200,15 @@ export class SwdDap {
     let ok = false;
     let lastAck = 0;
     const dumps: string[] = [];
+    let silent = false;
     const OFFSETS = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8];
+    // Attempts: 0 standard startup, 1 long startup (host-drive bit = 1), then both again with the opposite polarity.
     for (let attempt = 0; attempt < 4 && !ok; attempt++) {
+      const long = (attempt & 1) === 1;
+      this.hostDriveBit = attempt < 2 ? 1 : 0;
       const b = new Batch(this);
-      b.lineResetAndSwitch();
+      if (long) b.lineResetAndSwitchLong();
+      else b.lineResetAndSwitch();
       const i = b.read(false, DP_DPIDR);
       const start = b.txns[i].start;
       const bits = b.out.size;
@@ -197,10 +220,14 @@ export class SwdDap {
           inv.get(start + 16, 16).toString(16).padStart(4, '0') + ' ' +
           inv.get(start + 32, 16).toString(16).padStart(4, '0') + ' ' +
           inv.get(start + 48 > bits - 8 ? bits - 8 : start + 48, 8).toString(16).padStart(2, '0');
-        dumps.push('drive' + this.hostDriveBit + ': ' + raw);
+        dumps.push((long ? 'long' : 'std') + '/drive' + this.hostDriveBit + ': ' + raw);
       }
+      // The line stayed high after the request: the target is simply not driving SWDIO.
+      if (inv.get(start + 9, 3) === 7 && inv.get(start + 12, 32) === 0xffffffff) silent = true;
       // The target's DPIDR must come back as: ACK=OK, data with bit0 = 1 (RAO), valid parity.
+      // The window must start after the request (some probes echo the host-driven bits, which can fake an answer).
       for (const off of OFFSETS) {
+        if (off < -1) continue;
         const a0 = start + 9 + off;
         if (a0 < 0 || start + 45 + off >= bits) continue;
         const ack = inv.get(a0, 3);
@@ -210,20 +237,22 @@ export class SwdDap {
         const p = inv.get(start + 44 + off, 1);
         if ((popcount32(d) & 1) !== p) continue;
         if ((d & 1) !== 1 || d === 0xffffffff) continue;
+        // Far offsets need the unmistakable Arm DPIDR signature (designer 0x23B -> low 12 bits 0x477).
+        if (off > 3 && (d & 0xfff) !== 0x477) continue;
         this.sampleOffset = off;
         this.dpidr = d;
         ok = true;
         break;
       }
-      if (!ok) {
-        // Nothing decodable at any offset -> try the opposite direction-bit polarity next.
-        this.hostDriveBit = 1 - this.hostDriveBit;
-      }
     }
     if (!ok) {
+      this.hostDriveBit = 1;
       throw new SwdError(
-        'No SWD response (ack=0x' + lastAck.toString(16) + '). Raw in-bits: ' + dumps.join(' ; ') +
-          '. Check SWDIO/SWCLK/GND, VTref and target power.',
+        (silent
+          ? 'Target not answering on SWD: SWDIO stays high after the request'
+          : 'No SWD response (ack=0x' + lastAck.toString(16) + ')') +
+          '. Raw in-bits: ' + dumps.join(' ; ') +
+          '. Check SWDIO/SWCLK/GND, VTref and target power, and that the target really has SWD wired/enabled (JTAG-only boards do not answer).',
       );
     }
 
@@ -252,13 +281,18 @@ export class SwdDap {
     return this.dpidr;
   }
 
+  /** Words per read/write batch that fit in maxBits (TAR write + RDBUFF flush + one 54-bit transaction per word). */
+  private wordsPerBatch(): number {
+    return Math.max(1, Math.floor((this.maxBits - 2 * 54) / 54));
+  }
+
   async readWords(addr: number, count: number): Promise<number[]> {
     const result: number[] = new Array(count).fill(0);
     let done = 0;
     while (done < count) {
       const a = addr + done * 4;
       const toBoundary = (0x400 - (a & 0x3ff)) >> 2; // TAR auto-increment only guaranteed within 1 KB
-      const n = Math.min(count - done, MAX_READ_WORDS, toBoundary);
+      const n = Math.min(count - done, MAX_READ_WORDS, this.wordsPerBatch(), toBoundary);
       const b = new Batch(this);
       b.write(true, AP_TAR, a);
       const idx: number[] = [];
@@ -278,7 +312,7 @@ export class SwdDap {
     while (done < words.length) {
       const a = addr + done * 4;
       const toBoundary = (0x400 - (a & 0x3ff)) >> 2;
-      const n = Math.min(words.length - done, MAX_WRITE_WORDS, toBoundary);
+      const n = Math.min(words.length - done, MAX_WRITE_WORDS, this.wordsPerBatch(), toBoundary);
       const b = new Batch(this);
       b.write(true, AP_TAR, a);
       for (let k = 0; k < n; k++) b.write(true, AP_DRW, words[done + k]);
@@ -296,7 +330,7 @@ export class SwdDap {
   async writeWordsPaced(addr: number, words: number[], padBits: number): Promise<void> {
     const pad = Math.max(0, Math.min(Math.floor(padBits), 1500));
     const perWord = 54 + pad; // 8 req + 1 trn + 3 ack + 1 trn + 32 data + 1 parity + IDLE_BITS + pad
-    const maxWords = Math.max(1, Math.floor((MAX_BITS - 54) / perWord));
+    const maxWords = Math.max(1, Math.floor((this.maxBits - 54) / perWord));
     let done = 0;
     while (done < words.length) {
       const a = addr + done * 4;
@@ -321,21 +355,23 @@ export class SwdDap {
     if ((addr & 1) !== 0) throw new SwdError('Unaligned halfword write');
     const pad = Math.max(0, Math.min(Math.floor(padBits), 1500));
     const perHw = 54 + pad;
-    const maxN = Math.max(1, Math.floor((MAX_BITS - 3 * 54) / perHw)); // CSW, TAR, CSW restore
+    const maxN = Math.max(1, Math.floor((this.maxBits - 3 * 54) / perHw)); // CSW, TAR, CSW restore
     let done = 0;
+    let first = true;
     while (done < hws.length) {
       const a = addr + done * 2;
       const toBoundary = (0x400 - (a & 0x3ff)) >> 1;
       const n = Math.min(hws.length - done, maxN, toBoundary);
+      const last = done + n >= hws.length;
       const b = new Batch(this);
-      b.write(true, AP_CSW, CSW_HALF);
+      if (first) b.write(true, AP_CSW, CSW_HALF); // 16-bit mode is set once per call ...
       b.write(true, AP_TAR, a);
       for (let k = 0; k < n; k++) {
         const lane = ((a + 2 * k) & 2) * 8; // halfword rides on byte lanes 0-1 or 2-3
         b.write(true, AP_DRW, ((hws[done + k] & 0xffff) << lane) >>> 0);
         b.pad(pad);
       }
-      b.write(true, AP_CSW, CSW_VALUE);
+      if (last) b.write(true, AP_CSW, CSW_VALUE); // ... and restored once at the end
       try {
         await this.runChecked(b);
       } catch (e) {
@@ -348,7 +384,19 @@ export class SwdDap {
         }
         throw e;
       }
+      first = false;
       done += n;
+    }
+  }
+
+  /** Drop the debug power-up request so the chip no longer sees a connected debugger. Errors are ignored. */
+  async powerDown(): Promise<void> {
+    try {
+      const b = new Batch(this);
+      b.write(false, DP_CTRLSTAT, 0);
+      await this.runChecked(b);
+    } catch {
+      /* the chip may already have reset */
     }
   }
 

@@ -1,14 +1,25 @@
 import { hex32 } from '../util';
 import { probeNrf52 } from './nrf52';
-import { probeStm32f4 } from './stm32f4';
-import { probeStm32Fpec } from './stm32fpec';
+import { probeStm32f4, protectorStm32f4 } from './stm32f4';
+import { probeStm32Fpec, protectorStm32Fpec } from './stm32fpec';
 import { UNSUPPORTED_STM32 } from './stm32ids';
-import { Ctx, FlashChip, Mem, Probe } from './types';
+import { Ctx, FlashChip, Mem, Probe, ProtectProbe, Protector } from './types';
 
 export * from './types';
 
 /** Add new chip families here: write a `Probe` that returns a FlashChip when the ID registers match. */
 const PROBES: Probe[] = [probeStm32Fpec, probeStm32f4, probeNrf52];
+
+const PROTECTORS: ProtectProbe[] = [protectorStm32Fpec, protectorStm32f4];
+
+/** Read-out protection driver for the attached chip, or null if its family is not supported. */
+export async function detectProtector(mem: Mem): Promise<Protector | null> {
+  for (const p of PROTECTORS) {
+    const pr = await p(mem);
+    if (pr) return pr;
+  }
+  return null;
+}
 
 export async function detectChip(mem: Mem, ctx: Ctx): Promise<FlashChip> {
   for (const p of PROBES) {

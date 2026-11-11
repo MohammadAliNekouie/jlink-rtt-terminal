@@ -1,4 +1,4 @@
-# Test plan - v1.2.5 (firmware update + hex viewer)
+# Test plan - v1.2.6 (firmware update + hex viewer)
 
 Status: the flashing logic is verified **only in simulation** (`npm run test:sim`, 18 checks against fake
 STM32F1/F4 chips through the real SwdDap). Nothing has run on real silicon yet. Controller timings, the
@@ -107,6 +107,9 @@ What to try if it still locks up:
 * **Icon** is now pixel-identical to the supplied 48x48 picture, enlarged with nearest-neighbour scaling (no smoothing,
   no redraw). On Android, adaptive launchers mask icons into circles/squircles, so the exact square picture sits on a
   white plate (the whole picture stays visible). Older launchers show the plain square icon.
+* **v1.2.7:** the white plate is gone. The adaptive icon is now full-bleed: the exact picture fills Android's whole visible
+  area (opaque, no transparency). Round launcher masks trim the bottom corners of "Link"; rounded-square masks show it fully.
+  Check it on the home screen after install.
 * **Pages**: tabs below the message area - **RTT messages** (default on start) and **USB messages** (probe/USB
   diagnostics, SWD failures and the firmware-update log). A dot on a tab means unseen new lines. `Clr` clears the
   page you are looking at. The command line is shown on the RTT page only. Starting a firmware update switches to the
@@ -116,3 +119,64 @@ What to try if it still locks up:
 
 Check: start the app (RTT tab selected, base address filled), connect (RTT text on RTT tab, `[usb]` lines only on the USB
 tab), start a flash (jumps to USB tab), tap back to RTT.
+
+## v1.2.6: OB probe log analysis
+The "J-Link ARM-OB STM32" log showed the target **not answering at all** (SWDIO high after the request). v1.2.3-1.2.5
+could fake a DPIDR from the probe's echo of the request bits, which produced the misleading `No SWD ACK (0x0)`; fixed.
+Expected log now on that board: `Target not answering on SWD: SWDIO stays high ...` followed by one line
+`JTAG IDCODE 0x........ ...` or `no JTAG answer either (TDO raw: ...)`. Please send both lines, plus the chip on the board
+and whether the J-Link V8 works on the *same* board/header.
+
+## v1.2.9: OB startup like SEGGER's software (from your captures)
+What the captures (as analysed) say about the 2012 OB probe: raw SWD I/O (`0xCF`) is supported, the PC connects at 100 kHz
+with a longer startup bitstream (`0xE79E`, then `0xEDB6`), host-drive bit = 1, and the DPIDR reply is read one bit earlier
+than the app's default (offset -1, which the app already tries). The captures were later uploaded and verified (see v1.2.10).
+
+Test on the OB: Connect. On the USB page expect `on-board probe: SWD starts at 100 kHz` and either
+`SWD up, DPIDR=0x1BA01477 ...` or `SWD connect failed: ... Raw in-bits: std/drive1: ... ; long/drive1: ...`. Send me that
+line: it shows what the target answered to the standard and to the long startup.
+Not implemented (only if connect works but later steps fail): the PC splits request/ACK and data into separate `0xCF` calls,
+the app batches them; the 2nd header byte of `0xCF` varies in the captures (1f/00/6f/72) and is not understood, so it stays 0.
+
+## v1.2.10: what the real captures proved (and did not)
+Proved: SEGGER's software starts SWD on **both** probes with the same 267-bit frame (56 ones, `0xE79E`, 56 ones, `0xEDB6`,
+56 ones, 16 zeros, DPIDR read `0xA5`) at 100 kHz, host-drive bit 1, and reads the reply one bit early (our offset -1). The OB
+only ever receives raw frames up to 34 bytes; after startup SEGGER switches to the probe's own `0xC5` memory commands.
+Not proved: that the app now connects to the OB. Test: Connect. Expect `on-board probe: SWD starts at 100 kHz`,
+then `SWD up, DPIDR=0x1BA01477 ... offset=-1`. If it fails, the USB page shows `Raw in-bits: std/drive1: ... ; long/drive1: ...`.
+Note: at 100 kHz scanning a big RAM window for the RTT block is slow (about 20 s for 128 KB even without USB overhead):
+set RAM size to your chip's real RAM (e.g. 5000 for 20 KB) or enter the `_SEGGER_RTT` address.
+
+## v1.2.11: registration + heartbeat for the OB (the likely missing piece)
+The v1.2.10 field log showed the OB still silent although our SWD frame equals SEGGER's bit for bit. The captures show what is
+different *before* that frame: SEGGER queries the probe, registers a connection and refreshes it every ~3 s (`09 64 ...`).
+v1.2.11 replays that for OB probes. Expected USB-page lines: `on-board probe: registered like SEGGER software (heartbeat every ~3 s)`
+then `SWD up, DPIDR=0x1BA01477 ...`. If it still says `Target not answering`, send me the whole USB page (the trace now holds the
+first 40 exchanges). If you see `SEGGER-style registration failed: ...`, send that line.
+Speed is now chosen from a drop-down (tap it to open the list); it is locked while connected or flashing.
+
+## v1.2.12: UI tidy-up
+Check: the speed drop-down is narrow and reads e.g. `4000 kHz`; the **Rst** switch is gone; **Clr** empties the RTT page, the USB page
+and the command line in one tap.
+
+## v1.2.13: flashing speed
+Default SWD speed is now 1000 kHz. On the OB, flashing connects at 100 kHz, then raises the speed. Expected USB-page lines:
+`SWD up, DPIDR=... at 100 kHz`, `SWD speed raised to 1000 kHz` (or `SWD at N kHz is not reliable ...` then a lower step),
+`Detected ...`, `USB frames raised to 544 bits`, `USB frames raised to 972 bits` (or `larger frames are not reliable ..., staying at 272 bits`).
+Time a 20-60 KB image at 1000 kHz and at 400 kHz and send me the times plus the USB page. If a `USB frames` step makes the probe
+stop answering, unplug/replug it: the app will not repeat that experiment until it is restarted.
+Reference (simulation only): a 20 KB image needs ~2500 USB round trips on the OB now vs ~11900 before; a V9 needs ~1300.
+
+## v1.2.14: read-out protection (RDP 1) - hardware-UNVERIFIED, use a spare chip
+Simulation (fake F1/F4 with ST's unlock rules, 60 checks) passes; nothing here has run on real silicon. Procedures follow ST's
+PM0075 / community-confirmed sequences. Test only on a board you can afford to erase.
+1. Flash a known-good image with the switch **off** first (regression).
+2. Switch **Read-out protect** on, flash. Expected USB-page lines: `Read-out protection (RDP level 1) will be set after programming: STM32...`,
+   normal erase/program/verify, `Setting read-out protection (RDP level 1) ...`, `RDP level 1 programmed and read back ...`,
+   `Debug port released. Power-cycle the board now.`
+3. Power-cycle the board **without** attaching the app/debugger: the firmware should run normally.
+4. Then try Connect in the app: on a protected chip this is expected to fail or fault the chip (that is the protection working).
+5. To get the chip back: STM32CubeProgrammer, connect under reset, set RDP level 0 (full erase). On F1, an active RDP also
+   write-protects the first flash pages until it is removed.
+If step 2 fails after "Setting read-out protection" the message says the option bytes may be half-written: remove protection with
+STM32CubeProgrammer and flash again. Please send me the whole USB page of any failure.

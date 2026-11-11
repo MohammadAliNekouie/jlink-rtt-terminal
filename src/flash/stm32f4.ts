@@ -1,5 +1,5 @@
 import { sleep, hex32 } from '../util';
-import { FlashChip, Mem, Probe, Sector, padBitsFor } from './types';
+import { FlashChip, Mem, ProtectProbe, Probe, Sector, padBitsFor } from './types';
 
 const DBGMCU_IDCODE = 0xe0042000;
 const DBGMCU_APB1_FZ = 0xe0042008;
@@ -10,6 +10,10 @@ const ACR = FLASH + 0x00;
 const KEYR = FLASH + 0x04;
 const SR = FLASH + 0x0c;
 const CR = FLASH + 0x10;
+const OPTKEYR = FLASH + 0x08;
+const OPTCR = FLASH + 0x14;
+const OPTKEY1 = 0x08192a3b;
+const OPTKEY2 = 0x4c5d6e7f;
 
 const KEY1 = 0x45670123;
 const KEY2 = 0xcdef89ab;
@@ -90,7 +94,12 @@ export const probeStm32f4: Probe = async (mem, ctx) => {
   }
   const family = DEV_IDS[id];
   if (!family) return null;
-  const kb = ((await mem.readWords(FLASH_SIZE_WORD, 1))[0] >>> 16) & 0xffff;
+  let kb: number;
+  try {
+    kb = ((await mem.readWords(FLASH_SIZE_WORD, 1))[0] >>> 16) & 0xffff;
+  } catch {
+    throw new Error('STM32' + family + ' detected, but its flash info cannot be read: read-out protection (RDP) is probably active. Remove it with STM32CubeProgrammer (RDP level 0, this erases the chip)');
+  }
   if (kb === 0 || kb > 2048) throw new Error('STM32F4: implausible flash size register (' + kb + ' KB)');
   const sectors = stm32f4Sectors(kb);
   const padBits = padBitsFor(60, ctx.speedKhz);
@@ -155,4 +164,46 @@ export const probeStm32f4: Probe = async (mem, ctx) => {
     },
   };
   return chip;
+};
+
+/**
+ * Read-out protection for F2/F4: unlock the option control register, set RDP[15:8] = 0xBB (level 1), start the option
+ * write, read back. 0xAA = level 0, 0xCC = level 2 (permanent) - 0xCC is never written and a level-2 chip is not touched.
+ */
+export const protectorStm32f4: ProtectProbe = async (mem) => {
+  let id: number;
+  try {
+    id = (await mem.readWords(DBGMCU_IDCODE, 1))[0] & 0xfff;
+  } catch {
+    return null;
+  }
+  const family = DEV_IDS[id];
+  if (!family) return null;
+  const rdpOf = (cr: number): number => (cr >>> 8) & 0xff;
+  return {
+    name: 'STM32' + family,
+    async isProgrammed(m) {
+      return rdpOf((await m.readWords(OPTCR, 1))[0]) !== 0xaa;
+    },
+    async protect(m) {
+      let cr = (await m.readWords(OPTCR, 1))[0] >>> 0;
+      const rdp = rdpOf(cr);
+      if (rdp === 0xcc) throw new Error('chip is already in read-out protection level 2 (permanent); not touching it');
+      if (rdp !== 0xaa) return; // level 1 is already programmed
+      await waitNotBusy(m, 2000);
+      if ((cr & 1) !== 0) {
+        await m.writeWord(OPTKEYR, OPTKEY1);
+        await m.writeWord(OPTKEYR, OPTKEY2);
+        cr = (await m.readWords(OPTCR, 1))[0] >>> 0;
+        if ((cr & 1) !== 0) throw new Error('Option control register refused the unlock keys');
+      }
+      const next = ((cr & ~0xff03) | (0xbb << 8)) >>> 0; // keep every other option bit; OPTLOCK = OPTSTRT = 0
+      await m.writeWord(OPTCR, next);
+      await m.writeWord(OPTCR, (next | 2) >>> 0); // OPTSTRT
+      checkErr(await waitNotBusy(m, 5000), 'Option byte programming');
+      await m.writeWord(OPTCR, (next | 1) >>> 0); // OPTLOCK
+      const back = rdpOf((await m.readWords(OPTCR, 1))[0]);
+      if (back !== 0xbb) throw new Error('RDP read-back mismatch (0x' + back.toString(16) + ')');
+    },
+  };
 };

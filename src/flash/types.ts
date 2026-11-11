@@ -39,6 +39,16 @@ export interface FlashChip {
   lock(mem: Mem): Promise<void>;
 }
 
+/** Read-out protection (RDP level 1) for one chip family. Level 2 (permanent) is never used. */
+export interface Protector {
+  name: string;
+  /** True if protection is already programmed in the option bytes (it may only become active after a reset). */
+  isProgrammed(mem: Mem): Promise<boolean>;
+  /** Program RDP level 1 (keeping the other option bytes) and read it back. */
+  protect(mem: Mem, ctx: Ctx): Promise<void>;
+}
+export type ProtectProbe = (mem: Mem) => Promise<Protector | null>;
+
 export type Probe = (mem: Mem, ctx: Ctx) => Promise<FlashChip | null>;
 
 export function padBitsFor(wordTimeUs: number, speedKhz: number): number {

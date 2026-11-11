@@ -53,7 +53,7 @@ This is **experimental software written for one person's bench**. Please read th
 | Area | Status |
 |---|---|
 | RTT terminal with **J-Link V9** (firmware 2021) | Works. Tested on a Samsung Galaxy Tab S7 with an STM32 target. |
-| Old on-board probe **J-Link ARM-OB STM32** (firmware Aug 2012) | **Not working yet.** The probe locks up on USB or the target's SWD reply is not decoded. The 5V switch is ignored on OB probes because it browned out the probe. |
+| Old on-board probe **J-Link ARM-OB STM32** (firmware Aug 2012) | Works on the author's board since v1.2.11. It needs SEGGER's startup: the app queries the probe, registers a connection and sends a heartbeat every ~3 s, starts SWD at 100 kHz and keeps raw frames to 34 bytes. The 5V switch is ignored on OB probes because it browned out the probe. |
 | Other J-Link models (EDU, EDU Mini, Plus, newer OB) | Untested. Expected to work if they use the standard vendor USB interface and the `0xCF` SWD I/O command. |
 | Firmware update | Verified **only in simulation** (`npm run test:sim`). Not yet confirmed on real hardware. Try it on a spare board first. |
 | RTT targets | 32-bit Cortex-M over SWD. JTAG-only targets are not supported. |
@@ -72,7 +72,7 @@ Hardware reports (working or not) are very welcome — see [Contributing](#contr
 ## Quick start
 
 ```bash
-git clone https://github.com/MohammadAliNekouie/jlink-rtt-terminal.git
+git clone https://github.com/YOUR-USER/jlink-rtt-terminal.git
 cd jlink-rtt-terminal
 npm install
 npx expo install --fix        # aligns Expo package versions with the SDK
@@ -108,7 +108,7 @@ npx expo run:android
 
    | Field | Default | Meaning |
    |---|---|---|
-   | SWD kHz | `4000` | SWD clock. Lower it (e.g. `400`) for long wires; the app also retries slower automatically. |
+   | SWD speed (drop-down) | `1000` kHz | SWD clock, 5 kHz to 12 MHz. Lower it (e.g. 400) for long wires; the app also retries slower automatically. On-board probes start at 100 kHz regardless. |
    | RAM start / size | `0x20000000` / `0x20000` | Window scanned for the RTT control block. Set it to your chip's RAM. |
    | RTT CB addr | empty | Optional fixed address of `_SEGGER_RTT` (find it in your linker `.map`). Skips the scan. |
    | 5V switch | off | Makes the probe supply 5V on its target-power pin. **Ignored on on-board (OB) probes.** |
@@ -128,7 +128,7 @@ Open **Firmware update…**, then:
    STM32F103CBT6 flash (128 KB, up to `0801FFFF`). A `.hex` file carries its own addresses.
 3. Check the **hex viewer**. Toggle between *flash image* (what will be written, by address) and *file bytes* (the raw file).
 4. Tap **Flash** and confirm. The app halts the core, detects the chip, erases only the pages/sectors the image touches,
-   programs, **verifies by read-back**, then resets into the new firmware. Progress and details go to the **USB messages** page.
+   programs, **verifies by read-back**, then resets into the new firmware. Progress and details go to the **USB messages** page. Programming runs at the SWD speed selected in the drop-down (on-board probes connect at 100 kHz first, then switch to it).
 
 Supported chips:
 
@@ -139,6 +139,11 @@ Supported chips:
 | nRF52 (52805/810/811/820/832/833/840) | NVMC | 4 KB pages. UICR is not touched. |
 
 STM32 F7, L0, L1, L4/L4+, L5, G0, G4, H7 and WB are **recognised** (you get a clear message) but have **no driver yet**.
+
+**Read-out protection (optional).** Switch on *Read-out protect (RDP 1)* to set the chip's read-out protection level 1 after a
+verified write (STM32 F0/F1/F2/F3/F4; off by default). Afterwards the firmware cannot be read back, a connected debugger makes the
+chip fault by design (so RTT and further updates with this app stop working), and removing the protection erases the whole chip
+(STM32CubeProgrammer, RDP level 0). Power-cycle the board after protecting. Level 2 (permanent) is never used.
 
 **Safety.** Erasing works on whole pages/sectors, so anything else in the first or last page the image touches is lost
 (for example a bootloader sharing that page). Cancelling or unplugging mid-update can leave incomplete firmware — just
@@ -216,7 +221,7 @@ Before flashing real boards, follow [TESTING.md](TESTING.md).
 |---|---|
 | "No J-Link found" | Use a data-capable OTG cable. Only SEGGER devices (VID `0x1366`) are listed. Check the device supports USB host. |
 | Permission prompt never appears or was denied | Unplug and replug the probe, then tap Connect again. |
-| `No SWD response (ack=…)` | Check SWDIO, SWCLK, GND and **VTref**; make sure the target is powered. Lower the speed. The raw reply is on the **USB messages** page — include it in bug reports. |
+| `Target not answering on SWD` / `No SWD response (ack=…)` | Check SWDIO, SWCLK, GND and **VTref**; make sure the target is powered. Lower the speed. A JTAG-only board will not answer on SWD at all (the log then says whether JTAG answers). The raw reply is on the **USB messages** page — include it in bug reports. |
 | `RTT control block not found` | Set RAM start/size to your chip's RAM, or enter the `_SEGGER_RTT` address from the `.map` file. The firmware must have initialised RTT. |
 | `USB write failed` / probe stops answering | Unplug and replug the probe (a wedged probe only recovers after a power cycle). Keep the 5V switch off with on-board probes. |
 | Old OB probe (2012 firmware) fails | Known limitation. Try a newer J-Link, or update the probe firmware with SEGGER's tools if your board vendor allows it. |

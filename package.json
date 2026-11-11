@@ -1,11 +1,11 @@
 {
   "name": "jlink-rtt-terminal",
-  "version": "1.2.5",
+  "version": "1.2.14",
   "description": "Android app: SEGGER RTT terminal and firmware updater for J-Link probes over USB-OTG (SWD, TypeScript)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MohammadAliNekouie/jlink-rtt-terminal.git"
+    "url": "git+https://github.com/YOUR-USER/jlink-rtt-terminal.git"
   },
   "keywords": [
     "jlink",

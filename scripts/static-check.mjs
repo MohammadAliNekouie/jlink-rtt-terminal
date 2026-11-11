@@ -67,7 +67,7 @@ ok(fs.existsSync(path.join(root, 'App.tsx')), 'App.tsx exists');
 // 9. Firmware-update feature wiring.
 for (const f of ['src/flasher.ts', 'src/image.ts', 'src/target.ts', 'src/hexview.ts', 'src/flash/index.ts',
                  'src/flash/types.ts', 'src/flash/stm32f4.ts', 'src/flash/stm32fpec.ts', 'src/flash/stm32ids.ts',
-                 'src/flash/nrf52.ts', 'scripts/sim-test.sh', 'tests/sim/test.ts']) {
+                 'src/flash/nrf52.ts', 'src/jtagdiag.ts', 'scripts/sim-test.sh', 'tests/sim/test.ts']) {
   ok(fs.existsSync(path.join(root, f)), f + ' exists');
 }
 for (const d of ['expo-document-picker', 'expo-file-system', 'expo-keep-awake']) {
@@ -90,7 +90,7 @@ ok(readJson('app.json').expo.android.versionCode >= 3, 'android versionCode bump
   }
   const app = readJson('app.json').expo;
   ok(app.icon === './assets/icon.png' && app.android.adaptiveIcon.foregroundImage === './assets/adaptive-icon.png' &&
-     app.android.adaptiveIcon.backgroundColor === '#FFFFFF', 'app.json icon paths');
+     app.android.adaptiveIcon.backgroundColor === '#0001FF', 'app.json icon paths');
   ok(app.version === pkg.version, 'app.json version (' + app.version + ') == package.json version (' + pkg.version + ')');
 }
 

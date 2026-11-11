@@ -37,9 +37,21 @@ const hexs = (b: Uint8Array, max: number): string => {
 export class JLink {
   /** If set, the first `traceLeft` exchanges are reported (for diagnosing odd probes). */
   onTrace: ((line: string) => void) | null = null;
-  traceLeft = 14;
+  traceLeft = 40;
+
+  // Connection registration (CMD_REGISTER): SEGGER's software registers with the probe and re-sends the registration
+  // about every 3 s; a probe drops idle connections. Only used for on-board probes (see registerConnection()).
+  private regFrame: number[] | null = null;
+  private lastBeat = 0;
+  private beating = false;
 
   private async tx(bytes: number[] | Uint8Array, expect: number): Promise<Uint8Array> {
+    // Heartbeat only before a new command (data.length > 0), never between a command and its continuation read.
+    if (bytes.length > 0) await this.maybeBeat();
+    return this.txRaw(bytes, expect);
+  }
+
+  private async txRaw(bytes: number[] | Uint8Array, expect: number): Promise<Uint8Array> {
     const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
     const t0 = Date.now();
     const tr = this.onTrace !== null && this.traceLeft > 0;
@@ -55,6 +67,62 @@ export class JLink {
       const what = data.length > 0 ? 'cmd 0x' + data[0].toString(16) + ' (' + data.length + ' B out)' : 'read';
       throw new UsbError('J-Link ' + what + ', expecting ' + expect + ' B, after ' + (Date.now() - t0) + ' ms: ' + (e instanceof Error ? e.message : String(e)));
     }
+  }
+
+  /** Send one REGISTER frame and read its variable-length reply (12 + 16 * maxConnections bytes). */
+  private async registerCall(frame: number[]): Promise<number | null> {
+    const head = await this.txRaw(frame, 4);
+    const max = head[2] | (head[3] << 8);
+    if (max < 1 || max > 32) throw new Error('unexpected REGISTER reply (max connections ' + max + ')');
+    const rest = await this.txRaw([], 8 + 16 * max);
+    const all = new Uint8Array(head.length + rest.length);
+    all.set(head, 0);
+    all.set(rest, head.length);
+    // Entries start at byte 8, 16 bytes each: pid(4) hid(4) iid(1) cid(1) handle(2) timestamp(4).
+    for (let i = 0; i < max; i++) {
+      const o = 8 + 16 * i;
+      if (o + 12 <= all.length && all[o] === frame[2] && all[o + 1] === frame[3] && all[o + 2] === frame[4] && all[o + 3] === frame[5]) {
+        return all[o + 10] | (all[o + 11] << 8);
+      }
+    }
+    return null;
+  }
+
+  private async maybeBeat(): Promise<void> {
+    if (this.regFrame === null || this.beating || Date.now() - this.lastBeat < 2500) return;
+    this.beating = true;
+    try {
+      await this.registerCall(this.regFrame);
+      this.lastBeat = Date.now();
+    } finally {
+      this.beating = false;
+    }
+  }
+
+  /** The read-only queries SEGGER's software sends before registering (replayed byte for byte from a capture). */
+  async seggerQueries(): Promise<void> {
+    await this.txRaw([0xe8], 4); // capabilities
+    await this.txRaw([0xed], 32); // extended capabilities
+    await this.txRaw([0xe6], 256);
+    await this.txRaw([0xf2], 256); // configuration
+    await this.txRaw([0xf0], 4); // hardware version
+    await this.txRaw([0x0d, 0x35, 0x3d, 0x01, 0x00], 4);
+  }
+
+  /**
+   * Register this connection like SEGGER's software does: `09 64 pid(4) hid(4) iid cid handle(2)`, first with handle 0,
+   * then again with the handle the probe assigned. The registration is then refreshed automatically every ~3 s.
+   */
+  async registerConnection(): Promise<void> {
+    const pid = (((Math.floor(Math.random() * 0xfffe) << 16) | 0x6054) >>> 0);
+    const frame = (handle: number): number[] => [
+      0x09, 0x64, pid & 255, (pid >>> 8) & 255, (pid >>> 16) & 255, (pid >>> 24) & 255,
+      0, 0, 0, 0, 0, 0, handle & 255, (handle >> 8) & 255,
+    ];
+    const handle = (await this.registerCall(frame(0))) ?? 1;
+    await this.registerCall(frame(handle));
+    this.regFrame = frame(handle);
+    this.lastBeat = Date.now();
   }
 
   async getVersion(): Promise<string> {

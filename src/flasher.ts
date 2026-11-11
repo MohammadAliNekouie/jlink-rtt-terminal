@@ -1,10 +1,10 @@
 import native from './native';
-import { JLink, TIF_SWD, firmwareYear, isObProbe } from './jlink';
+import { JLink, TIF_SWD, UsbError, firmwareYear, isObProbe } from './jlink';
 import { SwdDap, SwdError } from './swd';
-import { detectChip } from './flash';
-import type { FlashChip, Mem, Sector } from './flash';
+import { detectChip, detectProtector } from './flash';
+import type { FlashChip, Mem, Protector, Sector } from './flash';
 import { Segment, imageSize } from './image';
-import { haltCore, resetAndRun } from './target';
+import { haltCore, resetAndRelease, resetAndRun } from './target';
 import { hex32, sleep } from './util';
 
 export interface FlashConfig {
@@ -13,6 +13,8 @@ export interface FlashConfig {
   segments: Segment[];
   /** Reset and start the new firmware when done. */
   runAfter: boolean;
+  /** After a verified write, set read-out protection level 1 (the chip then refuses debuggers until it is mass-erased). */
+  protect?: boolean;
 }
 
 export interface FlashListener {
@@ -23,6 +25,9 @@ export interface FlashListener {
 }
 
 class Cancelled extends Error {}
+
+/** Things learned about the attached probe during this app run (so a retry does not repeat a failing experiment). */
+export const probeQuirks = { bigFramesBad: false };
 
 const CHUNK_WORDS = 256; // 1 KB
 const VERIFY_BYTES = 1024;
@@ -47,6 +52,58 @@ export class FlashJob {
 
   constructor(private cfg: FlashConfig, private ui: FlashListener) {}
 
+  /** After a slow connect, try the selected speed (then slower steps) and keep the first that reads reliably. */
+  private async raiseSpeed(jl: JLink, dap: SwdDap, from: number, want: number): Promise<number> {
+    const ladder = [want, 1000, 400, 200].filter((v, i, a) => v > from && v <= want && a.indexOf(v) === i);
+    for (const khz of ladder) {
+      this.check();
+      try {
+        await jl.setSpeedKhz(khz);
+        let first: number | null = null;
+        for (let k = 0; k < 3; k++) {
+          const cpuid = (await dap.readWords(0xe000ed00, 1))[0]; // CPUID: constant, never 0 or all ones
+          if (cpuid === 0 || cpuid === 0xffffffff || (first !== null && cpuid !== first)) throw new SwdError('unstable read');
+          first = cpuid;
+        }
+        this.ui.log('SWD speed raised to ' + khz + ' kHz');
+        return khz;
+      } catch (e) {
+        if (e instanceof UsbError) throw e;
+        this.ui.log('SWD at ' + khz + ' kHz is not reliable (' + (e instanceof Error ? e.message : String(e)) + ')');
+        await jl.setSpeedKhz(from); // back to the speed that connected, and bring the link back in sync
+        await dap.connect();
+      }
+    }
+    this.ui.log('staying at ' + from + ' kHz');
+    return from;
+  }
+
+  /**
+   * An on-board probe is only known to take 34-byte frames. Before erasing anything, read the same flash words with
+   * larger frames and keep a size only if the data is identical.
+   */
+  private async growFrames(dap: SwdDap, addr: number): Promise<void> {
+    if (probeQuirks.bigFramesBad) return;
+    const n = 48;
+    const small = await dap.readWords(addr, n);
+    for (const bits of [544, 972]) {
+      const prev = dap.maxBits;
+      dap.maxBits = bits;
+      try {
+        const big = await dap.readWords(addr, n);
+        if (big.some((w, i) => w !== small[i])) throw new SwdError('read-back differs');
+        this.ui.log('USB frames raised to ' + bits + ' bits');
+      } catch (e) {
+        dap.maxBits = prev;
+        probeQuirks.bigFramesBad = true;
+        if (e instanceof UsbError) throw e; // the probe may need a replug; do not keep experimenting
+        this.ui.log('larger frames are not reliable (' + (e instanceof Error ? e.message : String(e)) + '), staying at ' + prev + ' bits');
+        await dap.connect();
+        return;
+      }
+    }
+  }
+
   cancel(): void {
     this.cancelled = true;
   }
@@ -61,6 +118,8 @@ export class FlashJob {
     let chip: FlashChip | null = null;
     let mem: SwdDap | null = null;
     let touched = false; // flash was modified (or may have been)
+    let protector: Protector | null = null;
+    let protectStarted = false; // option bytes may be half-written
     try {
       const devs = native.listDevices();
       if (devs.length === 0) throw new Error('No J-Link found (OTG cable? phone must act as USB host)');
@@ -76,13 +135,24 @@ export class FlashJob {
       const version = await jl.getVersion();
       this.ui.log('Probe: ' + version);
       const ob = isObProbe(version);
+      if (ob) {
+        try {
+          await jl.seggerQueries();
+          await jl.registerConnection();
+          this.ui.log('on-board probe: registered like SEGGER software (heartbeat every ~3 s)');
+        } catch (e) {
+          this.ui.log('SEGGER-style registration failed: ' + (e instanceof Error ? e.message : String(e)));
+          native.flush();
+          if (e instanceof UsbError) throw e;
+        }
+      }
       const year = firmwareYear(version);
-      const oldFw = year !== null && year <= 2013;
-      if (oldFw) this.ui.log('old probe firmware (' + year + '): skipping optional queries, limiting SWD to 1000 kHz');
-      const avail = oldFw ? null : await jl.getAvailableInterfaces();
+      if (year !== null && year <= 2013) this.ui.log('note: old probe firmware (' + year + ')');
+      const avail = await jl.getAvailableInterfaces();
       if (avail !== null && (avail & (1 << TIF_SWD)) === 0) throw new Error('This probe does not offer SWD');
       await jl.selectInterface(TIF_SWD);
-      let speed = oldFw ? Math.min(this.cfg.speedKhz, 1000) : this.cfg.speedKhz;
+      let speed = ob ? Math.min(this.cfg.speedKhz, 100) : this.cfg.speedKhz;
+      if (ob && speed < this.cfg.speedKhz) this.ui.log('on-board probe: SWD starts at ' + speed + ' kHz');
       await jl.setSpeedKhz(speed);
       if (this.cfg.targetPower && ob) {
         this.ui.log('on-board probe: 5V target power switch ignored (board is powered through the probe USB cable)');
@@ -94,6 +164,7 @@ export class FlashJob {
       if (mv !== null) this.ui.log('VTref: ' + mv + ' mV');
 
       const dap = new SwdDap(jl);
+      if (ob) dap.maxBits = 272; // the largest raw frame (34 bytes) SEGGER's software is seen sending to this probe
       mem = dap;
       const speeds = [speed, 1000, 400, 100].filter((v, i, a) => v <= speed && a.indexOf(v) === i);
       for (let i = 0; i < speeds.length; i++) {
@@ -113,11 +184,24 @@ export class FlashJob {
       }
       this.ui.log('SWD up, DPIDR=' + hex32(dap.dpidr) + ' at ' + speed + ' kHz');
 
+      // An on-board probe has to connect at 100 kHz; for programming use the speed selected in the app.
+      if (ob && speed < this.cfg.speedKhz) speed = await this.raiseSpeed(jl, dap, speed, this.cfg.speedKhz);
+
       await haltCore(dap);
       this.ui.log('Core halted');
 
       chip = await detectChip(dap, { vtrefMv: mv, speedKhz: speed });
       this.ui.log('Detected ' + chip.name);
+      if (ob) await this.growFrames(dap, chip.flashStart);
+      if (this.cfg.protect) {
+        // Decide before anything is erased: refuse if this chip family cannot be protected.
+        protector = await detectProtector(dap);
+        if (!protector) {
+          throw new Error('Read-out protection is only supported for STM32 F0/F1/F2/F3/F4 here - switch "Protect" off for this chip');
+        }
+        if (await protector.isProgrammed(dap)) this.ui.log('note: read-out protection is already programmed on this chip');
+        this.ui.log('Read-out protection (RDP level 1) will be set after programming: ' + protector.name);
+      }
 
       const segs = this.cfg.segments;
       for (const s of segs) {
@@ -212,7 +296,18 @@ export class FlashJob {
       this.ui.log('Verify OK (' + total + ' bytes)');
 
       await chip.lock(dap);
-      if (this.cfg.runAfter) {
+      if (protector) {
+        this.ui.log('Setting read-out protection (RDP level 1) ...');
+        protectStarted = true;
+        await protector.protect(dap, { vtrefMv: mv, speedKhz: speed });
+        protectStarted = false;
+        this.ui.log('RDP level 1 programmed and read back. It becomes active after the next reset / power cycle.');
+        await resetAndRelease(dap, () => dap.powerDown());
+        this.ui.log('Debug port released. Power-cycle the board now. Do NOT attach a debugger afterwards: a protected chip faults when one connects (by design).');
+        this.ui.progress(1, 'Done');
+        ok = true;
+        msg = 'Firmware updated, verified and read-out protected (RDP 1) - power-cycle the board';
+      } else if (this.cfg.runAfter) {
         const started = await resetAndRun(dap, async () => {
           await dap.connect();
         });
@@ -220,9 +315,11 @@ export class FlashJob {
       } else {
         this.ui.log('Done (core left halted)');
       }
-      this.ui.progress(1, 'Done');
-      ok = true;
-      msg = 'Firmware updated and verified';
+      if (!protector) {
+        this.ui.progress(1, 'Done');
+        ok = true;
+        msg = 'Firmware updated and verified';
+      }
     } catch (e) {
       for (const l of this.trace) this.ui.log('usb ' + l);
       const text = e instanceof Error ? e.message : String(e);
@@ -236,6 +333,10 @@ export class FlashJob {
             /* ignore */
           }
         }
+      }
+      if (protectStarted) {
+        msg += ' - the option bytes may be half-written: the chip can be read-protected without your settings. ' +
+          'Remove protection with STM32CubeProgrammer (RDP level 0, erases the chip) and flash again';
       }
     } finally {
       try {

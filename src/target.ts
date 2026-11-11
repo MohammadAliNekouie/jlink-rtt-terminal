@@ -49,3 +49,18 @@ export async function resetAndRun(mem: Mem, reconnect: () => Promise<void>): Pro
   }
   return false;
 }
+
+/**
+ * End of a read-out-protected programming run: leave debug state, reset, drop the debug port. Nothing may touch the chip over
+ * SWD afterwards - a protected chip faults when a debugger is connected (by design).
+ */
+export async function resetAndRelease(mem: Mem, powerDown: () => Promise<void>): Promise<void> {
+  await mem.writeWord(DEMCR, 0);
+  await mem.writeWord(DHCSR, DBGKEY >>> 0); // C_DEBUGEN = 0, C_HALT = 0: the core runs, no longer in debug state
+  try {
+    await mem.writeWord(AIRCR, 0x05fa0004); // SYSRESETREQ: reloads the option bytes
+  } catch {
+    /* link may drop during reset */
+  }
+  await powerDown();
+}
